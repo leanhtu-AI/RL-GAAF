@@ -183,7 +183,7 @@ TARGET_LEVEL=intermediate           # Target skill level
 
 # System Parameters  
 POLICY_UPDATE_INTERVAL=300          # Policy update frequency (seconds)
-PREFERENCE_BATCH_SIZE=20            # Batch size for policy updates
+PREFERENCE_BATCH_SIZE=3           # Batch size for policy updates
 MAX_OUTPUT_TOKENS=1024              # Minimum token output
 
 # Server Configuration

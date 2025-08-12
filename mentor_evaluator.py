@@ -220,8 +220,8 @@ Return ONLY valid JSON in this exact format:
                     ),
                     safety_settings=self._get_safety_settings()
                 )
-                logger.debug(f"=== RAW GEMINI API RESULT === {result}")
-                print("=== DEBUG GEMINI RESULT ===", result)
+                # logger.debug(f"=== RAW GEMINI API RESULT === {result}")
+                # print("=== DEBUG GEMINI RESULT ===", result)
 
                 # Basic candidate existence check
                 if not getattr(result, "candidates", None) or len(result.candidates) == 0:

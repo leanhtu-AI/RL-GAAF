@@ -136,6 +136,11 @@ class RealTimeRLHFSystem:
         # Performance tracking
         self.performance_history = []
         
+        # Last count used for triggering count-based updates
+        self._last_update_pref_count: int = 0
+        # Lock to avoid concurrent policy updates (serialize count-trigger updates)
+        self._update_lock = asyncio.Lock()
+        
         logger.info("Real-time RLHF System initialized successfully")
     
     async def process_learning_request(self, prompt: str, context: Optional[Dict[str, Any]] = None) -> Tuple[str, MentorEvaluationResult, Dict[str, Any]]:
@@ -197,7 +202,7 @@ class RealTimeRLHFSystem:
                 preference_strength=preference_strength
             )
             
-            self._store_preference_data(preference_entry)
+            await self._store_preference_data(preference_entry)
             
             # Update policy performance
             self.policy_manager.update_policy_performance("main", main_evaluation.composite_score)
@@ -231,69 +236,103 @@ class RealTimeRLHFSystem:
             
             logger.error(f"Error processing learning request: {e}")
             raise e
-    
-    def _store_preference_data(self, preference_data: PreferenceData):
-        """Store preference data with size management"""
-        self.preference_data.append(preference_data)
         
+    async def _store_preference_data(self, preference_data: PreferenceData):
+        """Store preference data with size management + count-trigger"""
+        self.preference_data.append(preference_data)
+
         # Maintain maximum size
         if len(self.preference_data) > self.max_preference_data:
-            # Remove oldest entries
             self.preference_data = self.preference_data[-self.max_preference_data:]
-            
+
         logger.debug(f"Stored preference data - Total: {len(self.preference_data)}")
-    
-    async def update_policies_from_preferences(self, batch_size: Optional[int] = None):
+
+        # Count-trigger: chỉ update khi đủ batch size và chạy ngay sau request này
+        if getattr(CONFIG, "enable_count_trigger", False):
+            pending = len(self.preference_data) - getattr(self, "_last_update_pref_count", 0)
+            if pending >= getattr(CONFIG, "preference_batch_size", 3):
+                logger.info(
+                    f"Collected {pending} new preferences (batch_size={CONFIG.preference_batch_size}) -> running count-trigger policy update now."
+                )
+                await self._run_count_trigger_update()
+
+    async def _run_count_trigger_update(self):
+        pending = len(self.preference_data) - getattr(self, "_last_update_pref_count", 0)
+        if pending < getattr(CONFIG, "preference_batch_size", 3):
+            logger.info("Count-trigger found insufficient new preferences; skipping.")
+            return
+        try:
+            logger.info("🚀 Starting count-trigger policy update...")
+            await self.update_policies_from_preferences(trigger_type="count")
+            self._last_update_pref_count = len(self.preference_data)
+            self.stats.last_policy_update = datetime.now()
+            logger.info(f"✔️ Count-trigger update completed at {self._last_update_pref_count} preferences.")
+        except Exception as e:
+            logger.error(f"Count-trigger update error: {e}")
+
+
+    async def update_policies_from_preferences(self, batch_size: Optional[int] = None, trigger_type: str = "count"):
         """
         Update policies based on recent preference data
         """
-        if not self.preference_data:
-            logger.info("No preference data available for policy update")
-            return
-        
-        batch_size = batch_size or CONFIG.preference_batch_size
-        recent_data = self.preference_data[-batch_size:] if len(self.preference_data) >= batch_size else self.preference_data
-        
-        logger.info(f"Updating policies based on {len(recent_data)} recent preferences")
-        
-        # Analyze performance patterns
-        main_wins = sum(1 for d in recent_data if d.chosen_policy == "main")
-        enhancer_wins = sum(1 for d in recent_data if d.chosen_policy == "enhancer")
-        
-        avg_main_score = np.mean([d.main_evaluation.composite_score for d in recent_data])
-        avg_enhancer_score = np.mean([d.enhancer_evaluation.composite_score for d in recent_data])
-        avg_preference_strength = np.mean([d.preference_strength for d in recent_data])
-        
-        # Prepare performance data for policy adaptation
-        performance_data = {
-            "batch_size": len(recent_data),
-            "main_wins": main_wins,
-            "enhancer_wins": enhancer_wins,
-            "avg_main_score": avg_main_score,
-            "avg_enhancer_score": avg_enhancer_score,
-            "avg_preference_strength": avg_preference_strength,
-            "win_ratio": main_wins / len(recent_data)
-        }
-        
-        # Update policies
-        self.policy_manager.adapt_policies(performance_data)
-        
-        # Record performance history
-        performance_record = {
-            "timestamp": datetime.now().isoformat(),
-            **performance_data,
-            "policy_temperatures": {
-                "main": self.policy_manager.main_policy.temperature,
-                "enhancer": self.policy_manager.enhancer_policy.temperature
+        # Serialize updates using lock to avoid concurrent adaptations
+        async with self._update_lock:
+            if not self.preference_data:
+                logger.info("No preference data available for policy update")
+                return
+
+            batch_size = batch_size or CONFIG.preference_batch_size
+            recent_data = self.preference_data[-batch_size:] if len(self.preference_data) >= batch_size else self.preference_data
+
+            logger.info(f"Updating policies based on {len(recent_data)} recent preferences (trigger={trigger_type})")
+
+            # Analyze performance patterns
+            main_wins = sum(1 for d in recent_data if d.chosen_policy == "main")
+            enhancer_wins = sum(1 for d in recent_data if d.chosen_policy == "enhancer")
+
+            avg_main_score = np.mean([d.main_evaluation.composite_score for d in recent_data])
+            avg_enhancer_score = np.mean([d.enhancer_evaluation.composite_score for d in recent_data])
+            avg_preference_strength = np.mean([d.preference_strength for d in recent_data])
+
+            # Prepare performance data for policy adaptation
+            performance_data = {
+                "batch_size": len(recent_data),
+                "main_wins": main_wins,
+                "enhancer_wins": enhancer_wins,
+                "avg_main_score": avg_main_score,
+                "avg_enhancer_score": avg_enhancer_score,
+                "avg_preference_strength": avg_preference_strength,
+                "trigger": trigger_type,
+                "win_ratio": main_wins / len(recent_data)
             }
-        }
-        
-        self.performance_history.append(performance_record)
-        self.stats.last_policy_update = datetime.now()
-        
-        logger.info(f"Policy update completed - Main wins: {main_wins}, "
-                   f"Enhancer wins: {enhancer_wins}, Avg scores: M={avg_main_score:.2f}, E={avg_enhancer_score:.2f}")
-    
+
+            # Update policies
+            try:
+                self.policy_manager.adapt_policies(performance_data)
+                logger.info(
+                f"New temperatures -> Main: {self.policy_manager.main_policy.temperature:.2f}, "
+                f"Enhancer: {self.policy_manager.enhancer_policy.temperature:.2f}"
+)
+            except Exception as e:
+                logger.error(f"Policy adaptation error: {e}")
+                raise
+
+            # Record performance history
+            performance_record = {
+                "timestamp": datetime.now().isoformat(),
+                **performance_data,
+                "policy_temperatures": {
+                    "main": self.policy_manager.main_policy.temperature,
+                    "enhancer": self.policy_manager.enhancer_policy.temperature
+                }
+            }
+
+            self.performance_history.append(performance_record)
+            self.stats.last_policy_update = datetime.now()
+
+            logger.info(f"Policy update completed - Main wins: {main_wins}, "
+                       f"Enhancer wins: {enhancer_wins}, Avg scores: M={avg_main_score:.2f}, E={avg_enhancer_score:.2f}")
+
     def get_system_status(self) -> Dict[str, Any]:
         """Get comprehensive system status"""
         
@@ -361,8 +400,15 @@ class RealTimeRLHFSystem:
         """Cleanup system resources"""
         logger.info("Cleaning up RLHF system resources...")
         
-        # Clear caches
-        self.mentor_evaluator.clear_cache()
+        # Clear caches (call only if exists)
+        clear_fn = getattr(self.mentor_evaluator, "clear_cache", None)
+        if callable(clear_fn):
+            try:
+                clear_fn()
+            except Exception as e:
+                logger.warning(f"mentor_evaluator.clear_cache() error: {e}")
+        else:
+            logger.debug("mentor_evaluator.clear_cache() not available.")
         
         # Log final statistics
         logger.info(f"Final system stats: {self.stats.to_dict()}")
@@ -384,25 +430,13 @@ async def lifespan(app: FastAPI):
         rlhf_system = RealTimeRLHFSystem()
         logger.info("RLHF system startup completed")
         
-        # Start background policy update task
-        async def policy_update_scheduler():
-            """Background task for periodic policy updates"""
-            while True:
-                try:
-                    await asyncio.sleep(CONFIG.policy_update_interval)
-                    if rlhf_system:
-                        await rlhf_system.update_policies_from_preferences()
-                except Exception as e:
-                    logger.error(f"Policy update scheduler error: {e}")
-        
-        update_task = asyncio.create_task(policy_update_scheduler())
-        
+        # No time-based scheduler: policy updates triggered only by count-trigger (n preferences)
+        # System will update policies when enough preference data accumulates.
+
         yield
-        
+
         # Shutdown
         logger.info("Shutting down RLHF system...")
-        update_task.cancel()
-        
         if rlhf_system:
             await rlhf_system.cleanup()
             
@@ -483,7 +517,8 @@ async def trigger_policy_update(background_tasks: BackgroundTasks, batch_size: O
     if not rlhf_system:
         raise HTTPException(status_code=503, detail="RLHF system not initialized")
     
-    background_tasks.add_task(rlhf_system.update_policies_from_preferences, batch_size)
+    # Pass trigger type 'manual' so the adapt logic knows invocation source
+    background_tasks.add_task(rlhf_system.update_policies_from_preferences, batch_size, "manual")
     
     return {
         "message": "Policy update triggered",

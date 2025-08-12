@@ -1,6 +1,6 @@
 # Educational RLHF Real-time System - Complete Project
 
-## Requirements
+## Requirements with Mathematical Components
 fastapi==0.104.1
 uvicorn==0.24.0
 pydantic==2.5.0
@@ -9,3 +9,7 @@ numpy==1.26.2
 python-dotenv==1.0.0
 asyncio==3.4.3
 loguru==0.7.2
+
+# Mathematical Foundation Dependencies
+scipy==1.11.0  # For optimization algorithms (Bradley-Terry, KL)
+loguru

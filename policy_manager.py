@@ -11,6 +11,7 @@ import google.generativeai as genai
 import re
 from config import CONFIG
 import os
+import numpy as np
 logger = logging.getLogger(__name__)
 os.environ["RLHF_DEV_DISABLE_SAFETY"] = "1"
 
@@ -316,59 +317,167 @@ Remember: You are mentoring the next generation of {CONFIG.framework_type} devel
         
         logger.debug(f"Updated {policy_type} policy performance: score={score:.2f}")
     
+    # def adapt_policies(self, performance_data: Dict[str, Any]):
+    #     """
+    #     Adapt policy parameters based on recent batch statistics (batch averages and win counts).
+    #     Keeps the original conservative spirit: if main is judged better, make it more conservative
+    #     (lower temperature/top_p). If enhancer wins, allow more creativity.
+    #     """
+    #     batch_size = performance_data.get("batch_size", 1)
+    #     main_wins = performance_data.get("main_wins", 0)
+    #     enhancer_wins = performance_data.get("enhancer_wins", 0)
+    #     batch_main_avg = float(performance_data.get("avg_main_score", 0.0))
+    #     batch_enhancer_avg = float(performance_data.get("avg_enhancer_score", 0.0))
+
+    #     logger.info(
+    #         f"Adapting policies (batch_size={batch_size}) - "
+    #         f"batch_main_avg={batch_main_avg:.2f}, batch_enhancer_avg={batch_enhancer_avg:.2f}, "
+    #         f"main_wins={main_wins}, enhancer_wins={enhancer_wins}"
+    #     )
+
+    #     # conservative step sizes
+    #     temp_step = 0.02
+    #     top_p_step = 0.02
+    #     min_temp = 0.2
+    #     max_temp = 1.0
+    #     min_top_p = 0.2
+    #     max_top_p = 1.0
+
+    #     # thresholds to avoid tiny/flapping updates
+    #     win_margin_threshold = 1        # require at least 1 more win in batch
+    #     avg_diff_threshold = 0.3       # require avg score difference >= 0.3
+
+    #     reason = "no_significant_change"
+
+    #     # 1) If clear winner by wins in batch -> prefer that signal
+    #     if (main_wins - enhancer_wins) >= win_margin_threshold:
+    #         # main judged better -> make main more conservative; make enhancer slightly more creative
+    #         self.main_policy.temperature = max(min_temp, self.main_policy.temperature - temp_step)
+    #         self.main_policy.top_p = max(min_top_p, getattr(self.main_policy, "top_p", 0.9) - top_p_step)
+    #         self.enhancer_policy.temperature = min(max_temp, self.enhancer_policy.temperature + temp_step)
+    #         self.enhancer_policy.top_p = min(max_top_p, getattr(self.enhancer_policy, "top_p", 0.9) + top_p_step)
+    #         reason = "main_wins_majority"
+    #         logger.info(f"Main won batch -> made main more conservative (temp={self.main_policy.temperature:.2f}, top_p={self.main_policy.top_p:.2f})")
+
+    #     elif (enhancer_wins - main_wins) >= win_margin_threshold:
+    #         # enhancer judged better -> make enhancer more creative; make main slightly more conservative
+    #         self.enhancer_policy.temperature = min(max_temp, self.enhancer_policy.temperature + temp_step)
+    #         self.enhancer_policy.top_p = min(max_top_p, getattr(self.enhancer_policy, "top_p", 0.9) + top_p_step)
+    #         self.main_policy.temperature = max(min_temp, self.main_policy.temperature - temp_step)
+    #         self.main_policy.top_p = max(min_top_p, getattr(self.main_policy, "top_p", 0.9) - top_p_step)
+    #         reason = "enhancer_wins_majority"
+    #         logger.info(f"Enhancer won batch -> made enhancer more creative (temp={self.enhancer_policy.temperature:.2f}, top_p={self.enhancer_policy.top_p:.2f})")
+
+    #     else:
+    #         # 2) No clear winner by count -> use batch average difference (if significant)
+    #         avg_diff = batch_main_avg - batch_enhancer_avg
+    #         if avg_diff >= avg_diff_threshold:
+    #             # main avg significantly higher -> prefer conservative main (match original spirit)
+    #             self.main_policy.temperature = max(0.4, self.main_policy.temperature - 0.02)
+    #             reason = "batch_avg_main_high"
+    #             logger.info(f"Batch avg: main better -> reduced main temp to {self.main_policy.temperature:.2f}")
+    #         elif -avg_diff >= avg_diff_threshold:
+    #             # enhancer avg significantly higher -> increase main creativity a bit (match original spirit)
+    #             self.main_policy.temperature = min(0.8, self.main_policy.temperature + 0.02)
+    #             reason = "batch_avg_enhancer_high"
+    #             logger.info(f"Batch avg: enhancer better -> increased main temp to {self.main_policy.temperature:.2f}")
+    #         else:
+    #             logger.info("No significant difference in batch; no major temp/top_p change.")
+
+    #     # 3) Preserve original overall checks for enhancer based on overall performance (optional)
+    #     overall_avg = (batch_main_avg + batch_enhancer_avg) / 2.0
+    #     if overall_avg < 6.0:
+    #         self.enhancer_policy.temperature = min(1.0, self.enhancer_policy.temperature + 0.05)
+    #         logger.info(f"Overall low performance -> increased enhancer temp to {self.enhancer_policy.temperature:.2f}")
+    #     elif overall_avg > 8.5:
+    #         self.enhancer_policy.temperature = max(0.6, self.enhancer_policy.temperature - 0.02)
+    #         logger.info(f"Overall high performance -> reduced enhancer temp to {self.enhancer_policy.temperature:.2f}")
+
+    #     # Record update in history
+    #     update_record = {
+    #         "timestamp": datetime.now().isoformat(),
+    #         "batch_size": batch_size,
+    #         "main_wins": main_wins,
+    #         "enhancer_wins": enhancer_wins,
+    #         "batch_main_avg": batch_main_avg,
+    #         "batch_enhancer_avg": batch_enhancer_avg,
+    #         "main_temperature": self.main_policy.temperature,
+    #         "enhancer_temperature": self.enhancer_policy.temperature,
+    #         "main_top_p": getattr(self.main_policy, "top_p", None),
+    #         "enhancer_top_p": getattr(self.enhancer_policy, "top_p", None),
+    #         "adaptation_reason": reason
+    #     }
+    #     self.update_history.append(update_record)
+    #     self.policy_stats["last_policy_update"] = datetime.now()
+
+    #     logger.info("Policy adaptation completed")
     def adapt_policies(self, performance_data: Dict[str, Any]):
         """
-        Adapt policy parameters based on performance data
-        
-        Args:
-            performance_data: Dictionary containing recent performance metrics
+        Lightweight LPO-inspired policy adaptation for temperature/top_p tuning.
+        Uses mentor evaluation scores to adjust creativity/conservatism dynamically.
         """
-        
-        main_avg = self.main_policy.get_average_score()
-        enhancer_avg = self.enhancer_policy.get_average_score()
-        
-        logger.info(f"Adapting policies - Main avg: {main_avg:.2f}, Enhancer avg: {enhancer_avg:.2f}")
-        
-        # Adaptive temperature adjustment
-        if main_avg > enhancer_avg and main_avg > 7.5:
-            # Main policy performing well - make it slightly more conservative
-            self.main_policy.temperature = max(0.4, self.main_policy.temperature - 0.02)
-            logger.info(f"Reduced main policy temperature to {self.main_policy.temperature:.2f}")
-            
-        elif enhancer_avg > main_avg and enhancer_avg > 7.5:
-            # Enhancer performing well - make main policy more creative
-            self.main_policy.temperature = min(0.8, self.main_policy.temperature + 0.02)
-            logger.info(f"Increased main policy temperature to {self.main_policy.temperature:.2f}")
-        
-        # Adjust enhancer based on overall performance
-        overall_avg = (main_avg + enhancer_avg) / 2
-        
-        if overall_avg < 6.0:
-            # Performance dropping - increase diversity
-            self.enhancer_policy.temperature = min(1.0, self.enhancer_policy.temperature + 0.05)
-            logger.info(f"Increased enhancer temperature to {self.enhancer_policy.temperature:.2f}")
-            
-        elif overall_avg > 8.5:
-            # High performance - can afford to be more focused
-            self.enhancer_policy.temperature = max(0.6, self.enhancer_policy.temperature - 0.02)
-            logger.info(f"Reduced enhancer temperature to {self.enhancer_policy.temperature:.2f}")
-        
-        # Record update in history
+
+        # LPO hyperparameters (configurable)
+        alpha = getattr(CONFIG, "lpo_alpha", 0.03)  # step size
+        beta = getattr(CONFIG, "lpo_beta", 1.5)     # sensitivity to score difference
+        min_temp, max_temp = 0.2, 1.0
+        min_top_p, max_top_p = 0.2, 1.0
+
+        # Extract performance stats
+        main_avg = float(performance_data.get("avg_main_score", 0.0))
+        enhancer_avg = float(performance_data.get("avg_enhancer_score", 0.0))
+        delta = main_avg - enhancer_avg  # >0 means main better
+
+        # Compute preference signal (normalized -1..1)
+        signal = np.tanh(beta * delta / 10.0)  # mentor score is ~0-10
+
+        logger.info(
+            f"[LPO] main_avg={main_avg:.2f}, enhancer_avg={enhancer_avg:.2f}, "
+            f"delta={delta:.2f}, signal={signal:.3f}"
+        )
+
+        # Update policies
+        # Main: nếu signal > 0 -> giảm temperature (conservative hơn), ngược lại tăng
+        self.main_policy.temperature = float(
+            np.clip(self.main_policy.temperature - alpha * signal, min_temp, max_temp)
+        )
+        # Enhancer: ngược hướng với main
+        self.enhancer_policy.temperature = float(
+            np.clip(self.enhancer_policy.temperature + alpha * signal, min_temp, max_temp)
+        )
+
+        # Đồng thời update top_p theo cùng hướng
+        self.main_policy.top_p = float(
+            np.clip(self.main_policy.top_p - alpha * signal, min_top_p, max_top_p)
+        )
+        self.enhancer_policy.top_p = float(
+            np.clip(self.enhancer_policy.top_p + alpha * signal, min_top_p, max_top_p)
+        )
+
+        # Record history
         update_record = {
             "timestamp": datetime.now().isoformat(),
-            "main_avg_score": main_avg,
-            "enhancer_avg_score": enhancer_avg,
-            "overall_avg_score": overall_avg,
+            "main_avg": main_avg,
+            "enhancer_avg": enhancer_avg,
+            "delta": delta,
+            "signal": signal,
             "main_temperature": self.main_policy.temperature,
             "enhancer_temperature": self.enhancer_policy.temperature,
-            "adaptation_reason": self._get_adaptation_reason(main_avg, enhancer_avg, overall_avg)
+            "main_top_p": self.main_policy.top_p,
+            "enhancer_top_p": self.enhancer_policy.top_p,
+            "alpha": alpha,
+            "beta": beta
         }
-        
         self.update_history.append(update_record)
         self.policy_stats["last_policy_update"] = datetime.now()
-        
-        logger.info("Policy adaptation completed")
-    
+
+        logger.info(
+            f"[LPO] Updated temps: Main={self.main_policy.temperature:.2f}, "
+            f"Enhancer={self.enhancer_policy.temperature:.2f}, "
+            f"top_p: Main={self.main_policy.top_p:.2f}, Enhancer={self.enhancer_policy.top_p:.2f}"
+        )
+
+
     def _get_adaptation_reason(self, main_avg: float, enhancer_avg: float, overall_avg: float) -> str:
         """Get human-readable reason for policy adaptation"""
         

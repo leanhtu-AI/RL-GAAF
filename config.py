@@ -66,11 +66,12 @@ class SystemConfig:
     debug: bool = True
     
     # RLHF Parameters
-        # RLHF Parameters
-    policy_update_interval: int = 300  # seconds
-    preference_batch_size: int = 20
+    preference_batch_size: int = 3
+    enable_count_trigger: bool = True
+    # policy_update_interval: int = 300  # vẫn giữ time trigger nếu muốn
+    
     # Allow larger evaluator outputs to avoid MAX_TOKENS truncation (adjust per quota)
-    max_output_tokens: int = 3072
+    max_output_tokens: int = 4096
     # Max tokens to use for short/compact retry prompts (keeps retry bounded)
     evaluator_retry_max_tokens: int = 4096
 
@@ -114,14 +115,16 @@ def load_config() -> SystemConfig:
         host=os.getenv("HOST", "0.0.0.0"),
         port=int(os.getenv("PORT", 8000)),
         debug=os.getenv("DEBUG", "true").lower() == "true",
-        policy_update_interval=int(os.getenv("POLICY_UPDATE_INTERVAL", 300)),
+        # policy_update_interval=int(os.getenv("POLICY_UPDATE_INTERVAL", 300)),
         preference_batch_size=int(os.getenv("PREFERENCE_BATCH_SIZE", 20)),
         max_output_tokens=int(os.getenv("MAX_OUTPUT_TOKENS", 3072)),
         base_model=os.getenv("BASE_MODEL", "gemini-1.5-flash"),
         evaluator_model=os.getenv("EVALUATOR_MODEL", "gemini-2.5-flash"),
         enable_safety_filters=os.getenv("ENABLE_SAFETY_FILTERS", "false").lower() == "true",
         log_level=os.getenv("LOG_LEVEL", "INFO"),
+        enable_count_trigger=os.getenv("ENABLE_COUNT_TRIGGER", "true").lower() == "true",
         log_format=os.getenv("LOG_FORMAT", "%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+        
     )
 
 # Global configuration instance
